@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>滑行小蛋</title>
+<style>
+:root{--bg:#f4f5f7;--fg:#1d2330;--muted:#5b6475;color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#12151c;--fg:#e8ebf2;--muted:#9aa3b5;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#12151c;--fg:#e8ebf2;--muted:#9aa3b5;color-scheme:dark}
+html,body{margin:0;background:var(--bg);color:var(--fg);font-family:"Microsoft JhengHei","PingFang TC",system-ui,sans-serif}
+main{max-width:980px;margin:0 auto;padding:12px}
+h1{font-size:20px;margin:6px 0}
+p{margin:.4em 0;color:var(--muted);font-size:14px;line-height:1.7}
+html,body{overscroll-behavior:none}
+canvas{display:block;border-radius:10px;background:#0b0e1a;margin:8px auto;touch-action:none}
+.pad{display:none;justify-content:space-between;align-items:center;padding:6px 18px 14px;user-select:none;-webkit-user-select:none;touch-action:none}
+@media (pointer:coarse){.pad{display:flex}}
+#stick{position:relative;width:150px;height:150px;border-radius:50%;background:rgba(127,140,170,.25);border:2px solid rgba(127,140,170,.5);touch-action:none}
+#knob{position:absolute;left:50%;top:50%;width:64px;height:64px;margin:-32px 0 0 -32px;border-radius:50%;background:rgba(127,140,170,.75)}
+#jump{width:110px;height:110px;border-radius:50%;border:0;font-size:26px;font-weight:700;background:#e8862a;color:#fff;touch-action:none}
+</style>
+</head>
+<body>
+<main>
+<h1>🥚 滑行小蛋</h1>
+<canvas id="c" width="960" height="600"></canvas>
+<div class="pad"><div id="stick"><div id="knob"></div></div><button id="jump" type="button">跳</button></div>
+<p>電腦：方向鍵（或 WASD）移動，空白鍵跳躍，Enter 重新開始。手機：左下角圓盤滑動移動，右下角按鈕跳躍，遊戲結束後點畫面重來。橘色箭頭是加速板，粉紅色是減速區，綠色是存檔點，亮綠色是終點。掉出道路會損失一條命。</p>
+</main>
+<script>
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');let CW=960,CH=600,T=48;
+const W=30,H=30,HO=0.5,R=0.28;
+const G=new Array(W*H).fill(null);
+const fill=(x1,y1,x2,y2,h,t=0,d='')=>{for(let y=y1;y<=y2;y++)for(let x=x1;x<=x2;x++)G[y*W+x]={h,t,d}};
+const tile=(x,y)=>{x=Math.floor(x);y=Math.floor(y);return(x<0||y<0||x>=W||y>=H)?null:G[y*W+x]};
+// 關卡：t 0 一般、1 加速、2 減速、3 終點、4 存檔點
+fill(1,2,14,4,1);fill(7,2,9,4,1,1,'r');
+fill(18,2,28,4,1);fill(22,2,24,4,1,2);
+fill(26,5,28,14,1);fill(26,7,28,9,1,1,'d');fill(26,12,28,13,1,4);
+fill(12,15,28,17,2);fill(23,15,25,17,2,1,'l');
+fill(4,18,19,20,1);fill(10,18,12,20,1,2);
+fill(4,21,6,24,1);fill(4,21,6,21,1,4);fill(4,22,6,23,1,1,'d');
+fill(4,25,6,28,1);fill(9,26,13,28,1);fill(12,26,13,28,1,3);
+const DIR={l:[-1,0],r:[1,0],u:[0,-1],d:[0,1]};
+const K={left:0,right:0,up:0,down:0};
+let E,cp,cam,lives,time,state,jumpBuf,coyote,started;
+function reset(){cp={x:2.5,y:3.5,z:1};E={x:2.5,y:3.5,z:1,vx:0,vy:0,vz:0};cam={x:E.x,y:E.y};lives=3;time=0;state='play';jumpBuf=0;coyote=0;started=false}
+reset();
+const joy={x:0,y:0};
+const pad=document.getElementById('stick'),knob=document.getElementById('knob'),jb=document.getElementById('jump');
+function stickMove(e){const r=pad.getBoundingClientRect(),m=r.width/2;let dx=(e.clientX-r.left-m)/m,dy=(e.clientY-r.top-m)/m;const l=Math.hypot(dx,dy);if(l>1){dx/=l;dy/=l}const dz=0.12;joy.x=Math.abs(dx)<dz?0:dx;joy.y=Math.abs(dy)<dz?0:dy;knob.style.transform='translate('+(dx*m*0.55)+'px,'+(dy*m*0.55)+'px)';started=true}
+pad.addEventListener('pointerdown',e=>{pad.setPointerCapture(e.pointerId);stickMove(e);e.preventDefault()});
+pad.addEventListener('pointermove',e=>{if(pad.hasPointerCapture(e.pointerId))stickMove(e)});
+const stickEnd=()=>{joy.x=joy.y=0;knob.style.transform='translate(0,0)'};
+pad.addEventListener('pointerup',stickEnd);pad.addEventListener('pointercancel',stickEnd);
+jb.addEventListener('pointerdown',e=>{jumpBuf=0.15;started=true;e.preventDefault()});
+cv.addEventListener('pointerdown',()=>{if(state!=='play')reset();started=true});
+function fit(){const w=Math.max(280,Math.min(960,innerWidth-24));const coarse=matchMedia('(pointer:coarse)').matches;const h=coarse?Math.max(240,Math.min(Math.round(innerHeight*0.5),w)):Math.round(w*0.625);cv.width=CW=w;cv.height=CH=h;T=Math.max(30,Math.min(48,Math.round(CW/16)))}
+addEventListener('resize',fit);
+const keyMap={ArrowLeft:'left',KeyA:'left',ArrowRight:'right',KeyD:'right',ArrowUp:'up',KeyW:'up',ArrowDown:'down',KeyS:'down'};
+addEventListener('keydown',e=>{
+  if(keyMap[e.code]){K[keyMap[e.code]]=1;started=true;e.preventDefault()}
+  else if(e.code==='Space'){jumpBuf=0.15;started=true;e.preventDefault()}
+  else if(e.code==='Enter'||e.code==='KeyR'){reset()}
+});
+addEventListener('keyup',e=>{if(keyMap[e.code])K[keyMap[e.code]]=0});
+addEventListener('blur',()=>{for(const k in K)K[k]=0});
+
+function step(dt){
+  if(state!=='play')return;
+  time+=dt;
+  const tl=tile(E.x,E.y),gH=tl?tl.h:-99;
+  const grounded=E.z<=gH+0.02&&E.vz<=0;
+  coyote=grounded?0.1:coyote-dt;
+  let ax=K.right-K.left+joy.x,ay=K.down-K.up+joy.y;const n=Math.max(1,Math.hypot(ax,ay));ax/=n;ay/=n;
+  const ctl=grounded?16:6;
+  E.vx+=ax*ctl*dt;E.vy+=ay*ctl*dt;
+  let mx=9,boost=false,slow=false;
+  if(grounded&&tl){
+    if(tl.t===1){const D=DIR[tl.d];E.vx+=D[0]*45*dt;E.vy+=D[1]*45*dt;boost=true;mx=16}
+    else if(tl.t===2){slow=true;mx=4}
+    const f=Math.exp(-(slow?4.5:0.45)*dt);E.vx*=f;E.vy*=f;
+  }
+  const sp=Math.hypot(E.vx,E.vy);
+  if(sp>mx){const ns=Math.max(mx,sp*Math.exp(-(slow?6:1.2)*dt));E.vx*=ns/sp;E.vy*=ns/sp}
+  jumpBuf-=dt;
+  if(jumpBuf>0&&coyote>0&&E.vz<=0){E.vz=11;coyote=0;jumpBuf=0}
+  E.vz-=32*dt;E.z+=E.vz*dt;
+  const nx=E.x+E.vx*dt,t1=tile(nx+Math.sign(E.vx)*R,E.y);
+  if(t1&&t1.h>E.z+0.35)E.vx*=-0.35;else E.x=nx;
+  const ny=E.y+E.vy*dt,t2=tile(E.x,ny+Math.sign(E.vy)*R);
+  if(t2&&t2.h>E.z+0.35)E.vy*=-0.35;else E.y=ny;
+  const t=tile(E.x,E.y),g=t?t.h:-99;
+  if(E.vz<=0&&E.z<=g){E.z=g;E.vz=0;
+    if(t.t===4){cp={x:Math.floor(E.x)+0.5,y:Math.floor(E.y)+0.5,z:t.h}}
+    if(t.t===3)state='won';
+  }
+  if(E.z<-7){lives--;if(lives<=0)state='over';else{E.x=cp.x;E.y=cp.y;E.z=cp.z;E.vx=E.vy=E.vz=0}}
+  const k=Math.min(1,dt*5);cam.x+=(E.x-cam.x)*k;cam.y+=(E.y-cam.y)*k;
+}
+function arrow(cx,cy,dx,dy,col){
+  ctx.strokeStyle=col;ctx.lineWidth=4;ctx.lineJoin='round';const s=T*0.17;
+  ctx.beginPath();ctx.moveTo(cx-dx*s-dy*s,cy-dy*s+dx*s);ctx.lineTo(cx+dx*s,cy+dy*s);ctx.lineTo(cx-dx*s+dy*s,cy-dy*s-dx*s);ctx.stroke();
+}
+const sy=(y,z)=>(y-cam.y)*T+CH/2-z*T*HO,sx=x=>(x-cam.x)*T+CW/2;
+function drawTile(tx,ty,o){
+  const X=sx(tx),Y=sy(ty,o.h);let hue=214,sat=32,lig=40+o.h*7+(((tx+ty)&1)?3:0);
+  if(o.t===1){hue=28;sat=85;lig=52}else if(o.t===2){hue=330;sat=60;lig=68}
+  else if(o.t===3){hue=145;sat=65;lig=50}else if(o.t===4){hue=172;sat=45;lig=46}
+  const south=tile(tx,ty+1),hs=south?south.h:0;
+  if(o.h>hs){ctx.fillStyle=`hsl(${hue} ${sat}% ${lig-20}%)`;ctx.fillRect(X,Y+T,T+1,(o.h-hs)*T*HO+1)}
+  ctx.fillStyle=`hsl(${hue} ${sat}% ${lig}%)`;ctx.fillRect(X,Y,T+1,T+1);
+  ctx.strokeStyle='rgba(255,255,255,.12)';ctx.lineWidth=1;ctx.strokeRect(X+.5,Y+.5,T,T);
+  const cx=X+T/2,cy=Y+T/2;
+  if(o.t===1){const D=DIR[o.d];arrow(cx,cy,D[0],D[1],'#ffe2bd')}
+  else if(o.t===2){ctx.strokeStyle='#fff0f6';ctx.lineWidth=3;for(let i=-1;i<=1;i++){ctx.beginPath();ctx.moveTo(cx-10,cy+i*9);ctx.lineTo(cx+10,cy+i*9);ctx.stroke()}}
+  else if(o.t===3||o.t===4){ctx.fillStyle='rgba(255,255,255,.75)';ctx.font='bold 20px sans-serif';ctx.textAlign='center';ctx.fillText(o.t===3?'★':'◆',cx,cy+7)}
+}
+function drawEgg(){
+  const t=tile(E.x,E.y),g=t?t.h:null,x=sx(E.x);
+  if(g!==null&&E.z>=g-0.05){const gy=sy(E.y,g),k=Math.max(.3,1-(E.z-g)*.18);
+    ctx.fillStyle='rgba(0,0,0,.35)';ctx.beginPath();ctx.ellipse(x,gy,R*T*k*1.1,R*T*k*.5,0,0,7);ctx.fill()}
+  const y=sy(E.y,E.z)-R*T*1.2;
+  const gr=ctx.createRadialGradient(x-6,y-9,3,x,y,R*T*1.6);gr.addColorStop(0,'#fffdf4');gr.addColorStop(1,'#e7c98f');
+  ctx.fillStyle=gr;ctx.strokeStyle='#8a6a34';ctx.lineWidth=2;
+  ctx.beginPath();ctx.ellipse(x,y,R*T*1.05,R*T*1.35,0,0,7);ctx.fill();ctx.stroke();
+}
+function msg(a,b){
+  ctx.fillStyle='rgba(8,10,20,.7)';ctx.fillRect(0,CH/2-70,CW,140);
+  ctx.fillStyle='#fff';ctx.textAlign='center';ctx.font='bold 34px "Microsoft JhengHei",sans-serif';ctx.fillText(a,CW/2,CH/2-8);
+  ctx.font='18px "Microsoft JhengHei",sans-serif';ctx.fillText(b,CW/2,CH/2+34);
+}
+function draw(){
+  ctx.fillStyle='#0b0e1a';ctx.fillRect(0,0,CW,CH);
+  ctx.fillStyle='rgba(255,255,255,.5)';
+  for(let i=0;i<60;i++){const sxp=(i*173+Math.floor(cam.x*3))%CW,syp=(i*97+Math.floor(cam.y*3))%CH;ctx.fillRect(sxp,syp,2,2)}
+  const r0=Math.max(0,Math.floor(cam.y-CH/T/2-3)),r1=Math.min(H-1,Math.ceil(cam.y+CH/T/2+3));
+  const c0=Math.max(0,Math.floor(cam.x-CW/T/2-1)),c1=Math.min(W-1,Math.ceil(cam.x+CW/T/2+1));
+  const er=Math.floor(E.y);let done=false;
+  for(let ty=r0;ty<=r1;ty++){
+    for(let tx=c0;tx<=c1;tx++){const o=G[ty*W+tx];if(o)drawTile(tx,ty,o)}
+    if(ty===er){drawEgg();done=true}
+  }
+  if(!done)drawEgg();
+  ctx.fillStyle='#fff';ctx.textAlign='left';ctx.font='bold 18px "Microsoft JhengHei",sans-serif';
+  ctx.fillText('♥'.repeat(Math.max(0,lives))+'　時間 '+time.toFixed(1)+' 秒',14,28);
+  if(!started&&state==='play')msg('滑行到亮綠色終點','電腦：方向鍵加空白鍵　手機：左圓盤加右按鈕');
+  if(state==='won')msg('抵達終點！','用時 '+time.toFixed(1)+' 秒　按 Enter 或點畫面再玩一次');
+  if(state==='over')msg('遊戲結束','按 Enter 或點畫面重新開始');
+}
+let last=performance.now();
+function loop(now){const dt=Math.min(0.05,(now-last)/1000);last=now;step(dt/2);step(dt/2);draw();requestAnimationFrame(loop)}
+fit();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
